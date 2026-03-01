@@ -616,21 +616,61 @@ export default function App() {
 
     setIsSyncing(albumId);
     try {
-      const response = await fetch('/api/sync-folder', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ folderUrl })
-      });
+      // Since we are on a static host (Netlify), we use a public CORS proxy to fetch the folder HTML
+      const proxyUrl = `https://api.allorigins.win/get?url=${encodeURIComponent(folderUrl)}`;
+      const response = await fetch(proxyUrl);
 
       if (!response.ok) {
-        const err = await response.json();
-        throw new Error(err.error || 'Lỗi khi đồng bộ thư mục');
+        throw new Error('Không thể kết nối với dịch vụ proxy. Vui lòng thử lại sau.');
       }
 
-      const { photos: newPhotos } = await response.json();
+      const data = await response.json();
+      const html = data.contents;
+      
+      if (!html) {
+        throw new Error('Không thể lấy dữ liệu từ Google Drive. Hãy đảm bảo thư mục đã được chia sẻ công khai.');
+      }
+
+      // Client-side regex parsing (same logic as previously in server.ts)
+      const ids = new Set<string>();
+      
+      // Pattern 1: ["ID","FILENAME",...
+      const fileEntryRegex = /\["([a-zA-Z0-9_-]{28,45})","([^"]+)"/g;
+      let match;
+      while ((match = fileEntryRegex.exec(html)) !== null) {
+        const id = match[1];
+        const fileName = match[2].toLowerCase();
+        
+        const isImage = /\.(jpg|jpeg|png|webp|gif|bmp)$/.test(fileName);
+        if (isImage) {
+          ids.add(id);
+        }
+      }
+
+      // Pattern 2: Fallback broad search
+      if (ids.size === 0) {
+        const broadRegex = /"([a-zA-Z0-9_-]{33})"/g;
+        while ((match = broadRegex.exec(html)) !== null) {
+          const id = match[1];
+          if (!id.startsWith('drive') && !id.includes('http')) {
+            ids.add(id);
+          }
+        }
+      }
+
+      const folderIdMatch = folderUrl.match(/\/folders\/([^\/\?]+)/);
+      const folderId = folderIdMatch ? folderIdMatch[1] : null;
+
+      const newPhotos: Photo[] = Array.from(ids)
+        .filter(id => id !== folderId)
+        .map((id, index) => ({
+          id: (Date.now() + index).toString(),
+          url: `https://lh3.googleusercontent.com/u/0/d/${id}=w1600`,
+          isVertical: false 
+        }));
       
       if (newPhotos.length === 0) {
-        alert('Không tìm thấy ảnh nào trong thư mục này. Hãy đảm bảo thư mục đã được chia sẻ công khai và có chứa ảnh.');
+        alert('Không tìm thấy ảnh nào trong thư mục này. Hãy đảm bảo thư mục đã được chia sẻ công khai (Bất kỳ ai có liên kết đều có thể xem) và có chứa tệp ảnh.');
         return;
       }
 
@@ -647,14 +687,13 @@ export default function App() {
       const isPlaceholder = album.coverUrl.includes('picsum.photos') || !album.coverUrl;
       if (isPlaceholder && uniqueNewPhotos.length > 0) {
         updates.coverUrl = uniqueNewPhotos[0].url;
-      } else if (isPlaceholder && album.photos.length > 0) {
-        updates.coverUrl = album.photos[0].url;
       }
 
       await updateDoc(doc(db, "albums", albumId), updates);
-      alert(`Đã đồng bộ thành công ${newPhotos.length} ảnh!`);
+      alert(`Đã đồng bộ thành công ${uniqueNewPhotos.length} ảnh mới!`);
     } catch (error: any) {
-      alert(error.message);
+      console.error("Sync error:", error);
+      alert("Lỗi đồng bộ: " + error.message);
     } finally {
       setIsSyncing(null);
     }
