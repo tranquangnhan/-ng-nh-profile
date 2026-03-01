@@ -8,6 +8,11 @@ async function startServer() {
 
   app.use(express.json());
 
+  // Health check route
+  app.get("/api/health", (req, res) => {
+    res.json({ status: "ok" });
+  });
+
   // API to sync photos from a Google Drive folder
   app.post("/api/sync-folder", async (req, res) => {
     const { folderUrl } = req.body;
